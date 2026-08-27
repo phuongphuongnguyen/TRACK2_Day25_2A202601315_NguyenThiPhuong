@@ -61,3 +61,24 @@ def flag_util_lies(rows, util_threshold: float = 0.90, mfu_threshold: float = 0.
 def idle_waste_usd(idle_hours: float, on_demand_hr: float) -> float:
     """Dollars burned by a GPU left running idle (training done, instance up)."""
     return max(0.0, idle_hours) * max(0.0, on_demand_hr)
+
+
+def right_size_for_memory_bound(catalog: dict, min_hbm_gb: float, min_bw_tbs: float) -> str | None:
+    """"Your Turn" #2 — cheapest GPU type (by $/GB-VRAM) that still fits a memory-bound job.
+
+    `catalog` is {gpu_type: price_catalog row}. A memory-bound inference workload (low
+    arithmetic intensity, per roofline_regime) doesn't need peak FLOPs — it needs enough
+    HBM to hold the working set and enough bandwidth to stream it. Overpaying for a
+    compute-heavy GPU (e.g. H100) to serve it is the MBU analogue of the GPU-Util lie.
+    Returns None if nothing in the catalog meets both floors.
+    """
+    from .pricing import dollars_per_gb_vram
+    candidates = []
+    for gtype, row in catalog.items():
+        hbm = float(row["hbm_gb"])
+        bw = float(row["peak_bw_tbs"])
+        if hbm >= min_hbm_gb and bw >= min_bw_tbs:
+            candidates.append((gtype, dollars_per_gb_vram(float(row["on_demand_hr"]), hbm)))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda x: x[1])[0]

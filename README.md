@@ -70,6 +70,7 @@ Day25-Track2-GPU-FinOps-Lab/
 │   ├── m3_purchasing.py         # Mission 3: Chiến lược mua GPU
 │   ├── m4_allocation.py         # Mission 4: Phân bổ chi phí
 │   ├── m5_report.py             # Mission 5: Báo cáo tổng hợp
+│   ├── m6_your_turn.py          # (Optional) đo lường 5 phần mở rộng "Your Turn"
 │   └── run_all.py               # Chạy M1–M5 liên tiếp
 ├── tests/                    # 15 unit + integration tests (pytest)
 ├── outputs/                  # Kết quả sinh ra (report.md, savings.png, ...)
@@ -124,13 +125,37 @@ Day25-Track2-GPU-FinOps-Lab/
 
 ## Phần mở rộng "Your Turn" (nơi học sâu nhất)
 
-Lab **vẫn pass** mà không cần làm các phần này. Làm để hiểu sâu hơn:
+Lab **vẫn pass** mà không cần làm các phần này. Cả 5 phần đã được triển khai đầy đủ trong
+`missions/m6_your_turn.py` (đo lường thực tế, không chỉ mô tả) — chạy độc lập, **không** đụng
+vào M1–M5/`verify.py` đã được chấm điểm:
 
-1. **Cải thiện chính sách tier.** `pricing.recommend_tier()` dùng quy tắc đơn giản. Viết lại để tính thêm tỷ lệ gián đoạn (interruption rate) và so sánh 3yr vs 1yr. Savings có tăng không?
-2. **Right-sizing theo MBU.** Trong M1, dùng `$/GB-VRAM` và `peak_bw_tbs` để quyết định GPU nào phù hợp cho từng inference workload bị memory-bound.
-3. **Kinh tế học của Cache.** Prompt caching chỉ có lợi khi tỷ lệ read đủ cao. Thêm hàm `cache_is_worth_it()` trước khi tính tiết kiệm từ cache.
-4. **Ngân sách Reasoning.** Tính toán chi phí `$` và `Wh` thêm từ traffic `is_reasoning` trong M2/M5 và đề xuất quy tắc routing để giới hạn.
-5. **Lịch trình nhận thức Carbon.** Dùng `sustainability` để di chuyển job training có thể gián đoạn sang vùng rẻ nhất + sạch nhất, báo cáo lượng carbon tiết kiệm được.
+```bash
+python missions/m6_your_turn.py    # -> outputs/your_turn.md
+```
+
+1. **Cải thiện chính sách tier.** `pricing.recommend_tier_v2()` (finops/pricing.py) tính thêm tỷ lệ
+   gián đoạn (interrupt_rate + checkpoint rework) trước khi chọn spot, và so sánh break-even 1yr vs
+   3yr reserved riêng biệt thay vì gộp chung "reserved". Kết quả đo: **1/8 job** đổi khuyến nghị
+   (`job-infer-search`: reserved → on_demand, vì duty 75% không đủ an toàn cho cam kết dài hạn).
+2. **Right-sizing theo MBU.** `metrics.right_size_for_memory_bound()` + `pricing.dollars_per_gb_vram()`
+   dùng roofline (`arithmetic_intensity`/`roofline_regime`) để lọc các GPU inference/embedding bị
+   memory-bound, rồi tìm phương án gộp (consolidate) sang GPU có `$/GB-VRAM` rẻ hơn. Kết quả đo:
+   gộp 2×A100 + 2×A10G → tiết kiệm **~$1,210/tháng**.
+3. **Kinh tế học của Cache.** `pricing.cache_is_worth_it()` / `cache_breakeven_hit_frac()` tính
+   ngưỡng hoà vốn (~27.8%) giữa chi phí ghi cache một lần và mức giảm giá khi đọc lại. Áp dụng theo
+   từng segment (team/project): **~50% chi phí inference/ngày** nằm ở các segment (`search`, `eval`)
+   có tỷ lệ tái sử dụng cache quá thấp (~7%) — nên tắt cache ở đó.
+4. **Ngân sách Reasoning.** `sustainability.wh_per_query(is_reasoning=True)` kết hợp `pricing.request_cost`
+   để đo `$` và `Wh` của traffic `is_reasoning`: chỉ **8.4%** số request nhưng chiếm **94%** năng
+   lượng. Đề xuất quy tắc: giới hạn reasoning ở 5% request, phần vượt route sang phản hồi thường
+   → tiết kiệm **~$9/tháng + ~358 kWh/tháng**.
+5. **Lịch trình nhận thức Carbon.** `sustainability.carbon_aware_region_rank()` /
+   `region_shift_savings()` xếp hạng vùng theo điểm số kết hợp giá điện + carbon, rồi tính mức tiết
+   kiệm nếu chuyển các job training gián đoạn được sang vùng đó. Kết quả đo: chuyển sang
+   `us-east-wa` → tiết kiệm **~$116 + ~519 kg CO2e**.
+
+Xem chi tiết đầy đủ (bảng số liệu từng job/segment) trong `outputs/your_turn.md` sau khi chạy, và
+test tương ứng trong `tests/test_your_turn.py`.
 
 ---
 

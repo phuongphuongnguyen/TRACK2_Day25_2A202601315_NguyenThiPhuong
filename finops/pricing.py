@@ -77,6 +77,81 @@ def recommend_tier(hours_per_day: float, interruptible: bool, reserved_discount:
     return "on_demand"
 
 
+def recommend_tier_v2(
+    hours_per_day: float,
+    interruptible: bool,
+    interrupt_rate: float = 0.05,
+    spot_to_on_demand_ratio: float = 0.60,
+    ckpt_overhead_frac: float = 0.03,
+    rework_hours_per_interrupt: float = 0.5,
+    reserved_1yr_discount: float = 0.20,
+    reserved_3yr_discount: float = 0.45,
+    high_duty_for_3yr: float = 0.85,
+) -> dict:
+    """"Your Turn" #1 — recommend_tier() with interruption rate + 1yr-vs-3yr reserved.
+
+    recommend_tier() treats every interruptible job as an automatic spot win and every
+    reserved commitment as the same length. Neither holds up: a high interrupt_rate can
+    erase spot's discount once checkpoint rework is priced in, and a 3yr lock-in needs a
+    steadier duty cycle than a 1yr one to be safe. This policy:
+
+      1. Only recommends spot if the interruption-adjusted effective cost (checkpoint
+         overhead + expected rework hours) still beats on-demand.
+      2. Otherwise checks duty cycle against the 1yr and 3yr break-evens separately,
+         requiring `high_duty_for_3yr` before taking the longer, deeper discount.
+
+    Returns {'tier': ..., 'reason': ...} instead of a bare string so the rationale is
+    inspectable (useful when comparing against recommend_tier()'s pick).
+    """
+    duty = max(0.0, hours_per_day) / 24.0
+
+    if interruptible and hours_per_day < 24:
+        effective_hours_frac = (1.0 + ckpt_overhead_frac) + interrupt_rate * rework_hours_per_interrupt
+        effective_spot_frac = effective_hours_frac * spot_to_on_demand_ratio
+        if effective_spot_frac < 1.0:
+            return {"tier": "spot", "reason": f"interrupt-adjusted cost {effective_spot_frac:.2f}x on-demand"}
+
+    be_3yr = break_even_utilization(reserved_3yr_discount)
+    be_1yr = break_even_utilization(reserved_1yr_discount)
+    if duty >= max(be_3yr, high_duty_for_3yr):
+        return {"tier": "reserved_3yr",
+                "reason": f"duty {duty:.0%} clears the {high_duty_for_3yr:.0%} bar for a 3yr commit"}
+    if duty >= be_1yr:
+        return {"tier": "reserved_1yr",
+                "reason": f"duty {duty:.0%} clears 1yr break-even ({be_1yr:.0%}) but not the 3yr bar"}
+    return {"tier": "on_demand", "reason": f"duty {duty:.0%} too low/spiky for any commitment"}
+
+
+def dollars_per_gb_vram(on_demand_hr: float, hbm_gb: float) -> float:
+    """"Your Turn" #2 helper — $/hr per GB of VRAM (lower is better for memory-bound jobs)."""
+    if hbm_gb <= 0:
+        return float("inf")
+    return on_demand_hr / hbm_gb
+
+
+def cache_breakeven_hit_frac(cache_write_overhead_frac: float = 0.25, cache_discount: float = 0.10) -> float:
+    """"Your Turn" #3 — minimum cache-hit fraction before prompt caching pays for itself.
+
+    A cache write costs (1 + cache_write_overhead_frac)x a normal read once; each hit
+    after that costs cache_discount x. Break-even is the write overhead amortized over
+    the discount a hit earns you: write_overhead / (1 - discount).
+    """
+    return min(1.0, max(0.0, cache_write_overhead_frac / (1.0 - cache_discount)))
+
+
+def cache_is_worth_it(
+    cache_hit_frac: float,
+    cache_write_overhead_frac: float = 0.25,
+    cache_discount: float = 0.10,
+) -> bool:
+    """"Your Turn" #3 — True once cache_hit_frac clears the write-overhead break-even.
+
+    Below break-even, the one-time write premium isn't amortized by enough discounted
+    reads and caching *adds* cost versus never caching at all.
+    """
+    return cache_hit_frac >= cache_breakeven_hit_frac(cache_write_overhead_frac, cache_discount)
+
+
 def spot_checkpoint_cost(
     job_hours: float,
     spot_hr: float,
